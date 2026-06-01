@@ -1,0 +1,150 @@
+base_config:
+  - configs/variance.yaml
+
+dictionaries:
+  zh: "dictionaries/opencpop-extension.txt"
+  ja: dictionaries/dictionary-ja.txt
+extra_phonemes: []
+merged_phoneme_groups:
+  - ["zh/i", "ja/i"]
+  - ["SP", "ja/cl"]
+
+datasets:
+  - raw_data_dir: data/opencpop/raw
+    speaker: opencpop
+    spk_id: 0
+    language: zh
+    test_prefixes:
+      - "2001000001"
+      - "2001000002"
+      - "2001000003"
+  - raw_data_dir: data/itako/raw
+    speaker: itako
+    spk_id: 1
+    language: ja
+    test_prefixes:
+      - "itako02_seg036"
+      - "itako02_seg037"
+      - "itako02_seg038"
+  - raw_data_dir: data/kiritan/raw
+    speaker: kiritan
+    spk_id: 2
+    language: ja
+    test_prefixes:
+      - "01_000"
+      - "02_000"
+      - "03_000"
+  - raw_data_dir: data/karasu/raw
+    speaker: karasu
+    spk_id: 3
+    language: ja
+    test_prefixes:
+      - "bc_seg0"
+
+binary_data_dir: data/testssm/var/binary/
+binarization_args:
+  shuffle: false
+  num_workers: 4             # GPU训练时适量workers即可
+coverage_check_option: compat
+pe: parselmouth
+pe_ckpt: ''
+hnsep: world
+hnsep_ckpt: ''
+
+use_lang_id: true
+num_lang: 2
+use_spk_id: true
+num_spk: 4
+
+predict_dur: true
+predict_pitch: true
+predict_energy: false
+predict_breathiness: true
+predict_voicing: true
+predict_tension: true
+
+energy_db_min: -96.0
+energy_db_max: -12.0
+breathiness_db_min: -96.0
+breathiness_db_max: -20.0
+voicing_db_min: -96.0
+voicing_db_max: -12.0
+tension_logit_min: -10.0
+tension_logit_max: 10.0
+
+enc_ffn_kernel_size: 3
+use_rope: true
+hidden_size: 256
+dur_prediction_args:
+  arch: fs2
+  hidden_size: 512
+  dropout: 0.1
+  num_layers: 5
+  kernel_size: 3
+  log_offset: 1.0
+  loss_type: mse
+  lambda_pdur_loss: 0.3
+  lambda_wdur_loss: 1.0
+  lambda_sdur_loss: 3.0
+
+use_melody_encoder: true
+melody_encoder_args:
+  hidden_size: 128
+  enc_layers: 4
+use_glide_embed: false
+glide_types: [up, down]
+glide_embed_scale: 11.313708498984760
+
+diffusion_type: reflow
+
+pitch_prediction_args:
+  pitd_norm_min: -8.0
+  pitd_norm_max: 8.0
+  pitd_clip_min: -12.0
+  pitd_clip_max: 12.0
+  repeat_bins: 64
+  backbone_type: 'wavenet'
+  backbone_args:
+    num_layers: 20
+    num_channels: 256
+    dilation_cycle_length: 5
+
+variances_prediction_args:
+  total_repeat_bins: 48
+  backbone_type: 'wavenet'
+  backbone_args:
+    num_layers: 10
+    num_channels: 192
+    dilation_cycle_length: 4
+
+lambda_dur_loss: 1.0
+lambda_pitch_loss: 1.0
+lambda_var_loss: 1.0
+
+optimizer_args:
+  lr: 0.0006
+lr_scheduler_args:
+  scheduler_cls: torch.optim.lr_scheduler.StepLR
+  step_size: 10000
+  gamma: 0.75
+
+# 训练参数优化（RTX 4090 GPU）
+max_batch_frames: 80000      # 利用24GB显存
+max_batch_size: 48           # 大batch size
+max_updates: 160000          # 完整训练步数
+
+# 数据加载优化
+ds_workers: 4                # DataLoader工作进程
+dataloader_prefetch_factor: 2
+
+# 禁用梯度累积（直接使用大batch）
+accumulate_grad_batches: 1
+
+num_valid_plots: 10
+val_check_interval: 2000
+num_ckpt_keep: 5
+
+# GPU训练配置（RTX 4090）
+pl_trainer_devices: '1'
+pl_trainer_accelerator: 'gpu'
+pl_trainer_precision: '16-mixed'    # FP16混合精度加速
