@@ -3,35 +3,28 @@
 [![arXiv](https://img.shields.io/badge/arXiv-Paper-<COLOR>.svg)](https://arxiv.org/abs/2105.02446)
 [![license](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://github.com/openvpi/DiffSinger/blob/main/LICENSE)
 
-基于 [OpenVPI DiffSinger](https://github.com/openvpi/DiffSinger) 的增强分支，将 Transformer Encoder 替换为 **Mamba3 SSM (State Space Model)** + **可选混合 Transformer Self-Attention** 架构，在保持高音质的同时实现更快的 GPU 推理和更紧凑的 ONNX 模型。
+基于 [OpenVPI DiffSinger](https://github.com/openvpi/DiffSinger) 的增强分支，将 Transformer Encoder 替换为 **Mamba3 SSM (State Space Model)** 架构，在保持高音质的同时实现更快的 GPU 推理和更紧凑的 ONNX 模型。
 
 ## 与原始版本的差异
 
 | 模块 | 原始版本 | Chaos SSM 版本 |
 |:---|:---|:---|
-| **Encoder** | Transformer (Self-Attention) | MambaEncoder（支持纯 Mamba / 混合 Attention） |
+| **Encoder** | Transformer (Self-Attention) | MambaEncoder (BiMambaBlock) |
 | **Variance Backbone** | WaveNet | WaveNet（保持原样） |
-| **Acoustic Backbone** | LYNXNet (CNN) | LYNXNet（保持原样，可选 MambaBackbone） |
-| **LR 调度** | StepLR (每 10k 步骤降 25%) | CosineAnnealingLR（平滑衰减，SSM 友好） |
+| **Acoustic Backbone** | LYNXNet (CNN) | LYNXNet（保持原样） |
 | **ONNX 导出** | 标准导出 | CHUNK=128 优化 + onnxsim，节点数减少 20 倍 |
 | **预处理** | 自动检测 GPU | 强制 CPU（避免多进程 CUDA 冲突） |
 | **训练** | 支持 GPU | mamba-ssm CUDA kernel（GPU 训练） |
 
 ## 架构说明
 
-### Encoder：混合 Mamba3 + Attention
+### Encoder：MambaEncoder (SSM)
 
-采用 MambaEncoder 替代传统的 Transformer Encoder，支持通过配置控制每层类型：
+采用双向 Mamba 块（BiMambaBlock）替代传统的 Transformer Encoder：
 
-- **纯 Mamba** (`layer_types: null`)：全部 BiMambaBlock（双向 SSM + GatedMambaFFN）
-- **混合模式** (`layer_types: ['mamba', 'mamba', 'attention', 'attention']`)：
-  - 前 N 层：**BiMambaBlock**（双向 Mamba3 SSM，局部序列建模）
-  - 后 N 层：**BiMambaAttnWrapper**（标准 Transformer Self-Attention，全局语义聚合）
-- **向前兼容**：不配置 `encoder_layer_types` 或留空时，行为与纯 MambaEncoder 完全一致
-
-#### 混合模式动机
-
-Mamba3 SSM 对 LR 骤降极度敏感（状态转移矩阵隐藏状态漂移），而 Transformer Self-Attention 在低 LR 下仍能稳定传播全局信号。在后几层使用 Attention 可以有效对抗 SSM 在低 LR 下的性能退化。
+- **前向扫描** + **反向扫描**：两个独立的选择性 SSM 对输入序列分别进行正向和反向处理，输出拼接
+- **选择性扫描 (Selective Scan)**：通过状态空间模型捕获长程依赖，保持线性时间复杂度
+- **GPU 训练加速**：使用 mamba-ssm CUDA kernel 进行训练
 
 ### ONNX 导出：CHUNK 优化
 
@@ -49,30 +42,6 @@ Mamba3 SSM 对 LR 骤降极度敏感（状态转移矩阵隐藏状态漂移）�
 - 避免多进程 CUDA 初始化冲突
 - 特征提取（librosa/pyworld/parselmouth）本身是 CPU 库
 - 不受配置文件中 GPU 选项影响
-
-### LR 调度：CosineAnnealingLR
-
-本分支使用 `CosineAnnealingLR` 替代原版的 `StepLR`，从 6e-4 平滑衰减到 1e-5：
-
-```yaml
-lr_scheduler_args:
-  scheduler_cls: torch.optim.lr_scheduler.CosineAnnealingLR
-  T_max: 160000
-  eta_min: 0.00001
-```
-
-SSM 对 LR 骤降敏感（StepLR 每 10000 步 25% 衰减会导致验证 loss 尖峰），余弦调度比阶梯调度更适合 Mamba 训练。
-
-### 防过拟合配置
-
-相比原版，本分支新增以下训练正则化措施（针对小数据集 4 人 2h+ 场景）：
-
-| 措施 | 配置项 | 值 | 说明 |
-|:---|:---|:---|:---|
-| Backbone Dropout | `backbone_args.dropout_rate` | 0.1 | LYNXNet 残差块内 dropout（原版 0.0） |
-| L2 权重衰减 | `optimizer_args.weight_decay` | 1e-5 | 微量 L2 正则，抑制参数漂移 |
-| 梯度累积 | `accumulate_grad_batches` | 2 | 增加有效 batch size 的同时加入梯度噪声平滑 |
-| CosineAnnealingLR | `lr_scheduler_args` | T_max=160k, eta_min=1e-5 | 平滑衰减避免 SSM 在低 LR 下震荡 |
 
 ## 快速开始
 
@@ -98,18 +67,17 @@ python scripts/binarize.py --config data/config_variance.yaml
 ### 训练
 
 ```bash
-# Acoustic 模型（混合 Encoder + LYNXNet Diffusion + CosineAnnealingLR）
-python scripts/train.py acoustic --config data/config_acoustic.yaml --exp-name aco_testssm
+# Acoustic 模型（MambaEncoder + LYNXNet Diffusion）
+python scripts/train.py --config data/config_acoustic.yaml
 
-# Variance 模型（WaveNet，保留原版 LR 调度）
-python scripts/train.py acoustic --config data/config_variance.yaml --exp-name var_testssm
+# Variance 模型（WaveNet）
+python scripts/train.py --config data/config_variance.yaml
 ```
-
-> **注意**：`acoustic` 子命令是 argparse 兼容标记，不影响实际参数解析。训练使用 `--exp-name` 指定实验名称，checkpoint 保存在 `experiments/<exp_name>/`。
 
 ### ONNX 导出
 
 ```bash
+# 导出声码器 ONNX（自动应用 onnxsim.simplify）
 python scripts/export.py --config data/config_acoustic.yaml
 
 # 导出 Variance ONNX
@@ -118,7 +86,7 @@ python scripts/export.py --config data/config_variance.yaml
 
 ### 部署到 OpenUtau
 
-将导出的 `.onnx` 文件放入 OpenUtau 的 Singers 目录，配合 `dsconfig.yaml` 使用。
+将导出的 `.onnx` 文件放入 OpenUtau 的 Singers 目录，配合 `dsconfig.yaml` 使用。支持原版 OpenUtau 0.1.568，无需安装额外 DLL。
 
 ## 项目结构
 
@@ -126,7 +94,7 @@ python scripts/export.py --config data/config_variance.yaml
 ├── data/                    # 数据集配置与原始数据
 ├── configs/                 # 通用配置文件模板
 ├── modules/
-│   ├── commons/ssm_layers.py   # SimpleSSM, BiMambaBlock, BiMambaAttnWrapper, MambaEncoder
+│   ├── commons/ssm_layers.py   # SimpleSSM, BiMambaBlock, MambaEncoder
 │   ├── backbones/              # LYNXNet, WaveNet, MambaBackbone
 │   ├── fastspeech/             # FastSpeech2 encoder/variances
 │   ├── pe/rmvpe/               # RMVPE 音高提取器
@@ -148,20 +116,17 @@ python scripts/export.py --config data/config_variance.yaml
 
 | 参数 | 说明 | 推荐值 |
 |:---|:---|:---|
-| `encoder_layer_types` | Encoder 每层类型 | `['mamba','mamba','attention','attention']`（混合）或 `[]`（纯 Mamba） |
 | `backbone_type` (acoustic) | Diffusion 骨干网络 | `lynxnet` |
 | `backbone_type` (variance) | 方差预测骨干网络 | `wavenet` |
-| `lr_scheduler_args` | LR 调度器 | `CosineAnnealingLR(T_max=160000, eta_min=1e-5)` |
 | `max_updates` | 总训练步数 | `160000` |
 | `use_melody_encoder` | 旋律编码器（多语种/多说话人建议开启） | `true` |
 | `use_glide_embed` | 滑音嵌入（需要训练数据标注） | `false` |
 
 ## 已知限制
 
-- **mamba-ssm 与 ONNX 导出不兼容**：训练时使用 mamba-ssm CUDA kernel，导出时必须创建新环境（改用了 SimpleSSM）
+- **mamba-ssm 与 ONNX 导出不兼容**：训练时使用 mamba-ssm CUDA kernel，导出时必须使用新环境，改用SimpleSSM导出
 - **Variance 模型不包含 SSM**：Encoder 部分使用标准 FastSpeech2，不需要 CHUNK 优化
 - **CHUNK 值为模块级常量**：修改后需要重新导出 ONNX
-- **混合 Encoder 与纯 Mamba checkpoint 不兼容**：切换 encoder_layer_types 后必须从头训练
 
 ## References
 
