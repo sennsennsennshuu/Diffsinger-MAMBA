@@ -1,0 +1,121 @@
+base_config:
+  - configs/acoustic.yaml
+
+dictionaries:
+  zh: "dictionaries/opencpop-extension.txt"
+  ja: dictionaries/dictionary-ja.txt
+extra_phonemes: []
+merged_phoneme_groups:
+  - ["zh/i", "ja/i"]
+  - ["SP", "ja/cl"]
+
+datasets:
+  - raw_data_dir: data/opencpop/raw
+    speaker: opencpop
+    spk_id: 0
+    language: zh
+    test_prefixes:
+      - "2001000001"
+      - "2001000002"
+      - "2001000003"
+  - raw_data_dir: data/itako/raw
+    speaker: itako
+    spk_id: 1
+    language: ja
+    test_prefixes:
+      - "itako02_seg036"
+      - "itako02_seg037"
+      - "itako02_seg038"
+  - raw_data_dir: data/kiritan/raw
+    speaker: kiritan
+    spk_id: 2
+    language: ja
+    test_prefixes:
+      - "01_000"
+      - "02_000"
+      - "03_000"
+  - raw_data_dir: data/karasu/raw
+    speaker: karasu
+    spk_id: 3
+    language: ja
+    test_prefixes:
+      - "bc_seg0"
+
+
+binary_data_dir: data/testssm/binary/acoustic
+binarization_args:
+  shuffle: false
+  num_workers: 8             # 利用AMD 9955HX 16核优势
+coverage_check_option: compat
+pe: parselmouth
+pe_ckpt: ''
+hnsep: world
+hnsep_ckpt: ''
+vocoder: NsfHifiGAN
+vocoder_ckpt: ''
+
+use_lang_id: true
+num_lang: 2
+use_spk_id: true
+num_spk: 4
+use_energy_embed: false
+use_breathiness_embed: true
+use_voicing_embed: true
+use_tension_embed: true
+use_key_shift_embed: true
+use_speed_embed: true
+
+augmentation_args:
+  random_pitch_shifting:
+    enabled: true
+  fixed_pitch_shifting:
+    enabled: false
+  random_time_stretching:
+    enabled: true
+
+diffusion_type: reflow
+enc_ffn_kernel_size: 3
+use_rope: true
+use_shallow_diffusion: true   # 启用浅层扩散
+
+T_start: 0.4
+T_start_infer: 0.4
+K_step: 200                   # 适中的扩散步数
+K_step_infer: 200
+sampling_steps: 20
+backbone_type: 'lynxnet'
+backbone_args:
+  num_channels: 1024
+  num_layers: 6
+  kernel_size: 31
+  dropout_rate: 0.0
+  strong_cond: true
+
+optimizer_args:
+  lr: 0.0006
+lr_scheduler_args:
+  scheduler_cls: torch.optim.lr_scheduler.StepLR
+  step_size: 10000
+  gamma: 0.75
+
+# 训练参数优化（AMD 9955HX CPU）
+max_batch_frames: 32000       # 适中值，CPU可承受
+max_batch_size: 8             # 适中batch size
+max_updates: 160000           # 完整训练步数
+
+# 数据加载优化
+ds_workers: 8                 # DataLoader工作进程
+dataloader_prefetch_factor: 4
+
+# 梯度累积（模拟大batch）
+accumulate_grad_batches: 2
+
+num_valid_plots: 10
+val_with_vocoder: false
+val_check_interval: 2000
+num_ckpt_keep: 5
+
+# CPU训练配置
+pl_trainer_devices: '1'
+pl_trainer_accelerator: 'cpu'
+pl_trainer_precision: '32-true'    # CPU使用32位精度
