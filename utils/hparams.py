@@ -1,5 +1,6 @@
 import argparse
 import os
+import sys
 import yaml
 
 try:
@@ -45,7 +46,21 @@ def set_hparams(config='', exp_name='', hparams_str='', print_hparams=True, glob
         parser.add_argument('--infer', action='store_true', help='infer')
         parser.add_argument('--reset', action='store_true', help='reset hparams')
         args, unknown = parser.parse_known_args()
-        
+
+        # 直接从 sys.argv 读取 --exp_name／--exp-name，绕过 Lightning argparse 干扰 (参考 v3 hparams.py L244)
+        for arg_name in ('--exp_name', '--exp-name'):
+            if arg_name in sys.argv:
+                idx = sys.argv.index(arg_name)
+                if idx + 1 < len(sys.argv):
+                    args.exp_name = sys.argv[idx + 1]
+                break
+
+        # 同理读取 --config（Lightning 导入时也会干扰 argparse 拿到 --config）
+        if '--config' in sys.argv:
+            idx = sys.argv.index('--config')
+            if idx + 1 < len(sys.argv):
+                args.config = sys.argv[idx + 1]
+
         tmp_args_hparams = args.hparams.split(',') if args.hparams.strip() != '' else []
         tmp_args_hparams.extend(hparams_str.split(',') if hparams_str.strip() != '' else [])
         args.hparams = ','.join(tmp_args_hparams)
@@ -119,11 +134,13 @@ def set_hparams(config='', exp_name='', hparams_str='', print_hparams=True, glob
         if args_work_dir != '' and (not os.path.exists(ckpt_config_path) or args.reset) and not args.infer:
             os.makedirs(hparams_['work_dir'], exist_ok=True)
             if mp_is_main_process:
-                # Only the main process will save the config file
-                with open(ckpt_config_path, 'w', encoding='utf-8') as f:
+                # 原子写入：先写临时文件，再 rename，防止进程被 kill 导致 YAML 截断
+                tmp_path = ckpt_config_path + '.tmp'
+                with open(tmp_path, 'w', encoding='utf-8') as f:
                     hparams_non_recursive = hparams_.copy()
                     hparams_non_recursive['base_config'] = []
                     yaml.safe_dump(hparams_non_recursive, f, allow_unicode=True, encoding='utf-8')
+                os.replace(tmp_path, ckpt_config_path)
     dump_hparams()
 
     hparams_['infer'] = args.infer

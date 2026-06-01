@@ -353,7 +353,8 @@ def mel2ph_to_dur(mel2ph, T_txt, max_dur=None):
 class FastSpeech2Encoder(nn.Module):
     def __init__(self, hidden_size, num_layers,
                  ffn_kernel_size=9, ffn_act='gelu',
-                 dropout=None, num_heads=2, use_pos_embed=True, rel_pos=True, use_rope=False):
+                 dropout=None, num_heads=2, use_pos_embed=True, rel_pos=True, use_rope=False,
+                 layer_types=None):
         super().__init__()
         self.num_layers = num_layers
         embed_dim = self.hidden_size = hidden_size
@@ -371,7 +372,8 @@ class FastSpeech2Encoder(nn.Module):
             ffn_act=ffn_act,
             dropout=dropout or 0.1,
             num_heads=num_heads,
-            rotary_embed=None  # SSM doesn't need RoPE
+            rotary_embed=None,  # SSM doesn't need RoPE
+            layer_types=layer_types,
         )
 
         self.layer_norm = nn.LayerNorm(embed_dim)

@@ -10,10 +10,14 @@ sys.path.insert(0, str(root_dir))
 
 os.environ['TORCH_CUDNN_V8_API_ENABLED'] = '1'  # Prevent unacceptable slowdowns when using 16 precision
 
+# 吞掉 positional 子命令（acoustic / variance），避免干扰 argparse 解析 --exp_name
+if len(sys.argv) > 1 and sys.argv[1] in ('acoustic', 'variance'):
+    sys.argv.pop(1)
+
 from utils.hparams import set_hparams, hparams
 
 set_hparams()
-if not hparams['nccl_p2p']:
+if not hparams.get('nccl_p2p', True):
     print("Disabling NCCL P2P")
     os.environ['NCCL_P2P_DISABLE'] = '1'
 

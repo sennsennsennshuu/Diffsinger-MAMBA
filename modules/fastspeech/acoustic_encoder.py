@@ -19,12 +19,17 @@ class FastSpeech2Acoustic(nn.Module):
         if self.use_lang_id:
             self.lang_embed = Embedding(hparams['num_lang'] + 1, hparams['hidden_size'], padding_idx=0)
         self.dur_embed = Linear(1, hparams['hidden_size'])
+        # 混合 Encoder 层类型：空列表或未配置 = 全部 mamba（向前兼容）
+        _layer_types = hparams.get('encoder_layer_types', None)
+        if _layer_types is None or len(_layer_types) == 0:
+            _layer_types = None
         self.encoder = FastSpeech2Encoder(
             hidden_size=hparams['hidden_size'], num_layers=hparams['enc_layers'],
             ffn_kernel_size=hparams['enc_ffn_kernel_size'], ffn_act=hparams['ffn_act'],
             dropout=hparams['dropout'], num_heads=hparams['num_heads'],
             use_pos_embed=hparams['use_pos_embed'], rel_pos=hparams.get('rel_pos', False), 
-            use_rope=hparams.get('use_rope', False)
+            use_rope=hparams.get('use_rope', False),
+            layer_types=_layer_types,
         )
 
         self.pitch_embed = Linear(1, hparams['hidden_size'])

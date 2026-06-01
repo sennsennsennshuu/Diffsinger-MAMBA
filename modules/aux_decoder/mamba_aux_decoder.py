@@ -25,7 +25,7 @@ class MambaAuxDecoder(nn.Module):
         out_dims: output mel bins (e.g., 128)
         num_channels: internal channel dimension
         num_layers: number of bidirectional Mamba blocks
-        d_state: SSM state size (Mamba1 default: 16)
+        d_state: SSM state size (Mamba3 default: 128)
         d_conv: local conv kernel size
         expand: channel expansion factor
         kernel_size: input/output conv kernel size

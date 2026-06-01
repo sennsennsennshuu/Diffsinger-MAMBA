@@ -51,7 +51,8 @@ pe_ckpt: ''
 hnsep: world
 hnsep_ckpt: ''
 vocoder: NsfHifiGAN
-vocoder_ckpt: ''
+vocoder_ckpt: 'checkpoints/pc_nsf_hifigan_44.1k_hop512_128bin_2025.02/model.ckpt'
+
 
 use_lang_id: true
 num_lang: 2
@@ -77,6 +78,9 @@ enc_ffn_kernel_size: 3
 use_rope: true
 use_shallow_diffusion: true   # 启用浅层扩散
 
+# 混合 Encoder：前2层 Mamba3 (局部 SSM) + 后2层 Transformer Self-Attention (全局语义)
+encoder_layer_types: ['mamba', 'mamba', 'attention', 'attention']
+
 T_start: 0.4
 T_start_infer: 0.4
 K_step: 400                  # 完整扩散步数
@@ -87,18 +91,22 @@ backbone_args:
   num_channels: 1024
   num_layers: 6
   kernel_size: 31
-  dropout_rate: 0.0
+  dropout_rate: 0.1             # 防过拟合：从0.0提升到0.1
   strong_cond: true
 
 optimizer_args:
   lr: 0.0006
+  weight_decay: 0.00001        # 微量L2正则，防过拟合
 lr_scheduler_args:
-  scheduler_cls: torch.optim.lr_scheduler.StepLR
-  step_size: 10000
-  gamma: 0.75
+  scheduler_cls: torch.optim.lr_scheduler.CosineAnnealingLR
+  T_max: 160000
+  eta_min: 0.00001
+
+# 梯度累积（增加梯度噪声平滑，防过拟合）
+accumulate_grad_batches: 2
 
 # 训练参数优化（RTX 4090 GPU）
-max_batch_frames: 25000       # 降低batch避免24GB显存OOM
+max_batch_frames: 50000       # 利用24GB显存
 max_batch_size: 48            # 大batch size
 max_updates: 160000           # 完整训练步数
 
@@ -106,12 +114,9 @@ max_updates: 160000           # 完整训练步数
 ds_workers: 4                 # DataLoader工作进程
 dataloader_prefetch_factor: 2
 
-# 梯度累积补偿小batch
-accumulate_grad_batches: 2
-
 num_valid_plots: 10
 val_with_vocoder: true
-val_check_interval: 500
+val_check_interval: 2000
 num_ckpt_keep: 5
 
 # GPU训练配置（RTX 4090）

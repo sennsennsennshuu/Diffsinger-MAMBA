@@ -329,29 +329,94 @@ class BiMambaBlock(nn.Module):
 # Mamba3 Encoder (Stack of BiMambaBlock)
 # ═══════════════════════════════════════════════════════════════════════
 
+class BiMambaAttnWrapper(nn.Module):
+    """
+    Transformer Self-Attention 层，接口兼容 BiMambaBlock。
+    用于混合 Encoder：与 BiMambaBlock 交替排列在同一 MambaEncoder 中。
+
+    forward(x, encoder_padding_mask=None, **kwargs) → Tensor
+    输入输出形状：[B, T, C] (batch_first)
+    """
+
+    def __init__(self, d_model, num_heads, dropout, kernel_size, act):
+        super().__init__()
+        self.norm1 = nn.LayerNorm(d_model)
+        self.self_attn = nn.MultiheadAttention(d_model, num_heads, dropout=dropout, batch_first=True)
+        self.dropout1 = nn.Dropout(dropout)
+        self.norm2 = nn.LayerNorm(d_model)
+        self.ffn = nn.Sequential(
+            nn.Conv1d(d_model, d_model * 4, kernel_size=kernel_size, padding=kernel_size // 2),
+            nn.GELU(),
+            nn.Conv1d(d_model * 4, d_model, kernel_size=1),
+        )
+        self.dropout2 = nn.Dropout(dropout)
+
+    def forward(self, x, encoder_padding_mask=None, **kwargs):
+        # [B, T, C] ← 与 BiMambaBlock 相同格式
+        residual = x
+        x_norm = self.norm1(x)
+        attn_mask = None
+        if encoder_padding_mask is not None:
+            attn_mask = encoder_padding_mask.bool()
+        x_attn, _ = self.self_attn(x_norm, x_norm, x_norm, key_padding_mask=attn_mask)
+        x = residual + self.dropout1(x_attn)
+
+        residual = x
+        x_norm2 = self.norm2(x)
+        x_ffn = x_norm2.transpose(1, 2)  # [B,T,C] → [B,C,T]
+        x_ffn = self.dropout2(self.ffn(x_ffn))
+        x_ffn = x_ffn.transpose(1, 2)  # [B,C,T] → [B,T,C]
+        x = residual + x_ffn
+
+        if encoder_padding_mask is not None:
+            x = x * (1 - encoder_padding_mask.float())[:, :, None]
+        return x
+
+
+def _build_attn_layer(hidden_size, num_heads, dropout, kernel_size, act):
+    """构造一个标准 Transformer Self-Attention 层（用于混合 Encoder）"""
+    return BiMambaAttnWrapper(
+        d_model=hidden_size, num_heads=num_heads,
+        dropout=dropout, kernel_size=kernel_size, act=act,
+    )
+
+
 class MambaEncoder(nn.Module):
     """
     Stack of bidirectional Mamba3 blocks forming a full encoder.
     Replaces the FastSpeech2Encoder's internal transformer stack.
-    
-    Constructor matches relevant FastSpeech2Encoder params.
+
+    Supports mixed layer types via `layer_types`:
+      - None / ['mamba']*N → pure Mamba3 (backward compatible)
+      - ['mamba','mamba','attention','attention'] → hybrid
     """
+
     def __init__(self, hidden_size, num_layers, ffn_kernel_size=9, ffn_act='gelu',
-                 dropout=0.1, num_heads=2, rotary_embed=None):
+                 dropout=0.1, num_heads=2, rotary_embed=None, layer_types=None):
         super().__init__()
-        self.layers = nn.ModuleList([
-            BiMambaBlock(
-                c=hidden_size,
-                num_heads=num_heads,
-                dropout=dropout,
-                attention_dropout=0.0,
-                relu_dropout=dropout,
-                kernel_size=ffn_kernel_size,
-                act=ffn_act,
-                rotary_embed=rotary_embed
+        if layer_types is None:
+            layer_types = ['mamba'] * num_layers
+        if len(layer_types) != num_layers:
+            raise ValueError(
+                f"layer_types length ({len(layer_types)}) != num_layers ({num_layers})"
             )
-            for _ in range(num_layers)
-        ])
+
+        layers = []
+        for lt in layer_types:
+            if lt == 'mamba':
+                layers.append(BiMambaBlock(
+                    c=hidden_size, num_heads=num_heads, dropout=dropout,
+                    attention_dropout=0.0, relu_dropout=dropout,
+                    kernel_size=ffn_kernel_size, act=ffn_act, rotary_embed=rotary_embed,
+                ))
+            elif lt == 'attention':
+                layers.append(_build_attn_layer(
+                    hidden_size=hidden_size, num_heads=num_heads,
+                    dropout=dropout, kernel_size=ffn_kernel_size, act=ffn_act,
+                ))
+            else:
+                raise ValueError(f"Unknown layer type: {lt!r}, expected 'mamba' or 'attention'")
+        self.layers = nn.ModuleList(layers)
         self.layer_norm = nn.LayerNorm(hidden_size)
 
     def forward(self, x, padding_mask=None, attn_mask=None, return_hiddens=False):

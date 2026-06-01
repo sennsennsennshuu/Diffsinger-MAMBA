@@ -7,7 +7,7 @@ from utils import filter_kwargs
 BACKBONES = {
     'wavenet': WaveNet,
     'lynxnet': LYNXNet,
-    'mamba': MambaBackbone,  # SSM-based backbone (replaces CNN with Mamba2)
+    'mamba': MambaBackbone,  # SSM-based backbone (replaces CNN with Mamba3)
 }
 
 

@@ -16,4 +16,3 @@ infer_out/
 
 .vscode
 .ipynb_checkpoints/
-.build/

@@ -76,6 +76,7 @@ augmentation_args:
 diffusion_type: reflow
 enc_ffn_kernel_size: 3
 use_rope: true
+encoder_layer_types: []   # 空 = 全部 mamba；['mamba','mamba','attention','attention'] 混合 Encoder
 use_shallow_diffusion: true   # 启用浅层扩散
 
 T_start: 0.4
@@ -88,15 +89,19 @@ backbone_args:
   num_channels: 1024
   num_layers: 6
   kernel_size: 31
-  dropout_rate: 0.0
+  dropout_rate: 0.1             # 防过拟合：从0.0提升到0.1
   strong_cond: true
 
 optimizer_args:
   lr: 0.0006
+  weight_decay: 0.00001        # 微量L2正则，防过拟合
 lr_scheduler_args:
-  scheduler_cls: torch.optim.lr_scheduler.StepLR
-  step_size: 10000
-  gamma: 0.75
+  scheduler_cls: torch.optim.lr_scheduler.CosineAnnealingLR
+  T_max: 160000
+  eta_min: 0.00001
+
+# 梯度累积（模拟大batch）
+accumulate_grad_batches: 2
 
 # 训练参数优化（AMD 9955HX CPU）
 max_batch_frames: 32000       # 适中值，CPU可承受
@@ -106,9 +111,6 @@ max_updates: 160000           # 完整训练步数
 # 数据加载优化
 ds_workers: 8                 # DataLoader工作进程
 dataloader_prefetch_factor: 4
-
-# 梯度累积（模拟大batch）
-accumulate_grad_batches: 2
 
 num_valid_plots: 10
 val_with_vocoder: false

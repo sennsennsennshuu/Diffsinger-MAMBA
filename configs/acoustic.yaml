@@ -9,7 +9,7 @@ merged_phoneme_groups: []
 datasets: []
 
 vocoder: NsfHifiGAN
-vocoder_ckpt: checkpoints/pc_nsf_hifigan_44.1k_hop512_128bin_2025.02/model.ckpt
+vocoder_ckpt: 'checkpoints/pc_nsf_hifigan_44.1k_hop512_128bin_2025.02/model.ckpt'
 audio_sample_rate: 44100
 audio_num_mel_bins: 128
 hop_size: 512            # Hop size.
@@ -65,6 +65,7 @@ max_beta: 0.02
 enc_ffn_kernel_size: 3
 use_rope: true
 rel_pos: true
+encoder_layer_types: []   # 空 = 全部 mamba；['mamba','mamba','attention','attention'] 混合 Encoder
 sampling_algorithm: euler
 sampling_steps: 20
 diff_accelerator: ddim
