@@ -14,22 +14,24 @@ sys.path.insert(0, str(root_dir))
 
 
 def find_exp(exp):
-    if not (root_dir / 'checkpoints' / exp).exists():
-        for subdir in (root_dir / 'checkpoints').iterdir():
+    """Search for experiment folder in experiments/ then checkpoints/."""
+    for search_dir_name in ('experiments', 'checkpoints'):
+        search_dir = root_dir / search_dir_name
+        if not search_dir.exists():
+            continue
+        if (search_dir / exp).exists():
+            print(f'| found ckpt by name: {exp} (in {search_dir_name}/)')
+            return exp
+        for subdir in search_dir.iterdir():
             if not subdir.is_dir():
                 continue
             if subdir.name.startswith(exp):
-                print(f'| match ckpt by prefix: {subdir.name}')
-                exp = subdir.name
-                break
-        else:
-            raise click.BadParameter(
-                f'There are no matching exp starting with \'{exp}\' in \'checkpoints\' folder. '
-                'Please specify \'--exp\' as the folder name or prefix.'
-            )
-    else:
-        print(f'| found ckpt by name: {exp}')
-    return exp
+                print(f'| match ckpt by prefix: {subdir.name} (in {search_dir_name}/)')
+                return subdir.name
+    raise click.BadParameter(
+        f'There are no matching exp starting with \'{exp}\' in \'experiments\' or \'checkpoints\' folder. '
+        'Please specify \'--exp\' as the folder name or prefix.'
+    )
 
 
 @click.group()
