@@ -39,8 +39,8 @@ MambaEncoder 支持通过 `encoder_layer_types` 逐层配置类型：
 
 | 模式 | 配置 | 说明 |
 |:---|:---|:---|
-| 纯 Mamba | `[]` 或 `null`（默认） | 全部使用 BiMambaBlock 层（向后兼容） |
-| 混合 | `['mamba','mamba','attention','attention']` | 前层：局部 SSM 建模；后层：全局语义聚合 |
+| 混合（默认） | `['mamba','mamba','attention','attention']` | 前层：局部 SSM 建模；后层：全局语义聚合 |
+| 纯 Mamba | `[]` 或 `null` | 全部使用 BiMambaBlock 层 |
 
 混合模式通过在后层使用 Self-Attention，缓解了 SSM 在低学习率下的不稳定性，Self-Attention 在低 LR 下仍能保持稳定的梯度传播。
 
@@ -54,7 +54,7 @@ MambaEncoder 支持通过 `encoder_layer_types` 逐层配置类型：
 
 | 参数 | 默认值 | 说明 |
 |:---|:---|:---|
-| `encoder_layer_types` | `[]` | 逐层类型：`'mamba'` 或 `'attention'` |
+| `encoder_layer_types` | `['mamba','mamba','attention','attention']` | 逐层类型：`'mamba'` 或 `'attention'` |
 | `backbone_type` | `lynxnet` | 扩散主干：`lynxnet` / `wavenet` / `mamba` |
 | `lr_scheduler_args` | CosineAnnealingLR(T_max=160k, eta_min=1e-5) | 学习率调度器 |
 | `backbone_args.dropout_rate` | 0.1 | 主干 dropout（防过拟合） |

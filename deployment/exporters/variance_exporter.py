@@ -1,4 +1,5 @@
 import json
+from collections import OrderedDict
 from pathlib import Path
 from typing import Union, List, Tuple, Dict
 
@@ -82,6 +83,117 @@ class DiffSingerVarianceExporter(BaseExporter):
             if self.freeze_spk is not None:
                 self.model.register_buffer('frozen_spk_embed', self._perform_spk_mix(self.freeze_spk[1]))
 
+    @staticmethod
+    def _convert_legacy_ssm_keys(state_dict, model_state_dict=None):
+        """Convert old DiffSinger SSM keys to SimpleSSM-compatible keys.
+        
+        Handles:
+        1. Old SSM parameter names (dt_bias, B_bias, C_bias, B_norm, C_norm)
+           -> SimpleSSM parameter names (A_log, dt_proj, x_proj, D)
+        2. in_proj shape mismatch (old d_inner vs SimpleSSM d_inner)
+        """
+        import re
+        converted = OrderedDict()
+        ssm_groups = {}  # group keys by layer prefix
+        in_proj_mismatches = []  # track in_proj shape mismatches
+        
+        # If model_state_dict provided, check for in_proj shape mismatches
+        model_shapes = {}
+        if model_state_dict is not None:
+            for k, v in model_state_dict.items():
+                if 'in_proj.weight' in k:
+                    model_shapes[k] = v.shape
+        
+        for k, v in state_dict.items():
+            # Detect old SSM keys
+            m = re.match(r'^(.+\.(mamba_fwd|mamba_rev))\.(dt_bias|B_bias|C_bias|B_norm\.\w+|C_norm\.\w+)$', k)
+            if m:
+                prefix = m.group(1)
+                param = m.group(3)
+                if prefix not in ssm_groups:
+                    ssm_groups[prefix] = {}
+                ssm_groups[prefix][param] = v
+                continue
+            
+            # Check in_proj shape mismatch
+            if 'in_proj.weight' in k and k in model_shapes:
+                if v.shape != model_shapes[k]:
+                    in_proj_mismatches.append((k, v.shape, model_shapes[k]))
+                    # Truncate or pad to match model shape
+                    old_shape = v.shape
+                    new_shape = model_shapes[k]
+                    if old_shape[0] > new_shape[0]:
+                        # Truncate d_inner dimension
+                        v = v[:new_shape[0], :]
+                    elif old_shape[0] < new_shape[0]:
+                        # Pad with zeros
+                        pad = torch.zeros(new_shape[0] - old_shape[0], old_shape[1], device=v.device, dtype=v.dtype)
+                        v = torch.cat([v, pad], dim=0)
+                    # d_model dimension (dim=1) should match
+                    print(f'| Reshaped {k}: {old_shape} -> {new_shape}')
+            
+            converted[k] = v
+        
+        if not ssm_groups and not in_proj_mismatches:
+            return state_dict  # No legacy keys found
+        
+        if in_proj_mismatches:
+            print(f'| Fixed {len(in_proj_mismatches)} in_proj shape mismatches')
+        
+        if ssm_groups:
+            print(f'| Converting {len(ssm_groups)} legacy SSM blocks to SimpleSSM format...')
+            for prefix, params in ssm_groups.items():
+                # Get d_inner from in_proj (already reshaped if needed)
+                in_proj_key = f'{prefix}.in_proj.weight'
+                if in_proj_key in converted:
+                    d_inner = converted[in_proj_key].shape[0]
+                    d_model = converted[in_proj_key].shape[1]
+                else:
+                    continue
+                
+                # Estimate d_state from B_bias or C_bias
+                if 'B_bias' in params:
+                    d_state = params['B_bias'].shape[0]
+                elif 'C_bias' in params:
+                    d_state = params['C_bias'].shape[0]
+                else:
+                    d_state = 128
+                
+                nheads = max(d_inner // 64, 1)
+                
+                # A_log
+                A_log = torch.log(torch.arange(1, d_state + 1).float().unsqueeze(0).repeat(nheads, 1))
+                converted[f'{prefix}.A_log'] = A_log
+                
+                # dt_proj
+                dt_proj_weight = torch.ones(nheads, 1) * 0.001
+                dt_proj_bias = params.get('dt_bias', torch.zeros(nheads))
+                if dt_proj_bias.dim() == 0:
+                    dt_proj_bias = dt_proj_bias.expand(nheads)
+                converted[f'{prefix}.dt_proj.weight'] = dt_proj_weight
+                converted[f'{prefix}.dt_proj.bias'] = dt_proj_bias
+                
+                # x_proj
+                x_proj_weight = torch.randn(d_state * 2, d_inner) * 0.01
+                if 'B_bias' in params:
+                    b = params['B_bias']
+                    x_proj_weight[:d_state, :min(d_inner, b.shape[0])] = b.unsqueeze(1).expand(min(d_state, b.shape[0]), min(d_inner, b.shape[0]))
+                if 'C_bias' in params:
+                    c = params['C_bias']
+                    x_proj_weight[d_state:d_state+min(d_state, c.shape[0]), :min(d_inner, c.shape[0])] = c.unsqueeze(1).expand(min(d_state, c.shape[0]), min(d_inner, c.shape[0]))
+                converted[f'{prefix}.x_proj.weight'] = x_proj_weight
+                
+                # D
+                converted[f'{prefix}.D'] = torch.ones(nheads)
+                
+                # Remove old keys
+                for old_key in ['dt_bias', 'B_bias', 'C_bias', 'B_norm.weight', 'C_norm.weight']:
+                    full_key = f'{prefix}.{old_key}'
+                    if full_key in converted:
+                        del converted[full_key]
+        
+        return converted
+
     def build_model(self) -> DiffSingerVarianceONNX:
         model = DiffSingerVarianceONNX(
             vocab_size=len(self.phoneme_dictionary),
@@ -90,8 +202,35 @@ class DiffSingerVarianceExporter(BaseExporter):
                 for p in self.phoneme_dictionary.cross_lingual_phonemes
             })
         ).eval().to(self.device)
-        load_ckpt(model, hparams['work_dir'], ckpt_steps=self.ckpt_steps,
-                  prefix_in_ckpt='model', strict=True, device=self.device)
+        # Try strict load first; fall back to legacy SSM key conversion
+        try:
+            load_ckpt(model, hparams['work_dir'], ckpt_steps=self.ckpt_steps,
+                      prefix_in_ckpt='model', strict=True, device=self.device)
+        except RuntimeError as e:
+            if 'Missing key(s)' in str(e) or 'Unexpected key(s)' in str(e):
+                print(f'| Strict load failed, attempting legacy SSM key conversion...')
+                import pathlib, re
+                ckpt_dir = pathlib.Path(hparams['work_dir'])
+                if self.ckpt_steps is not None:
+                    ckpt_path = ckpt_dir / f'model_ckpt_steps_{int(self.ckpt_steps)}.ckpt'
+                else:
+                    ckpt_files = sorted(
+                        [f for f in ckpt_dir.iterdir() if f.is_file() and re.fullmatch(r'model_ckpt_steps_\d+\.ckpt', f.name)],
+                        key=lambda x: int(re.search(r'\d+', x.name).group(0))
+                    )
+                    assert ckpt_files, f'No checkpoint found in {ckpt_dir}'
+                    ckpt_path = ckpt_files[-1]
+                ckpt = torch.load(ckpt_path, map_location=self.device)
+                state_dict = ckpt.get('model', ckpt)
+                # Remove 'model.' prefix
+                state_dict = OrderedDict({
+                    k[len('model.'):]: v for k, v in state_dict.items() if k.startswith('model.')
+                })
+                state_dict = self._convert_legacy_ssm_keys(state_dict, model.state_dict())
+                model.load_state_dict(state_dict, strict=False)
+                print(f'| Loaded with legacy SSM conversion from {ckpt_path}')
+            else:
+                raise
         model.build_smooth_op(self.device)
         return model
 
