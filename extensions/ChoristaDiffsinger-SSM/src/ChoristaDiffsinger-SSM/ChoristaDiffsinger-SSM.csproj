@@ -1,0 +1,53 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <PlatformTarget>x64</PlatformTarget>
+    <LangVersion>12.0</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <AssemblyName>Diffsinger-SSM</AssemblyName>
+    <RootNamespace>DiffsingerSSM</RootNamespace>
+    <!-- Don't drag any third-party dlls into the build output; the host (TuneLab) and the
+         already-installed ChoristaDiffsinger.tlx provide them at runtime. -->
+    <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <ImportDirectoryBuildProps>false</ImportDirectoryBuildProps>
+    <TuneLabRuntimeRoot Condition="'$(TuneLabRuntimeRoot)' == ''">..\..\..\..\.build\tunelab_runtime_v1.6.0</TuneLabRuntimeRoot>
+    <ChoristaDiffsingerRoot Condition="'$(ChoristaDiffsingerRoot)' == ''">..\..\..\..\.build\tunelab_research\ChoristaDiffsinger</ChoristaDiffsingerRoot>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="TuneLab.Base">
+      <HintPath>$(TuneLabRuntimeRoot)\TuneLab.Base.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="TuneLab.Extensions.Voices">
+      <HintPath>$(TuneLabRuntimeRoot)\TuneLab.Extensions.Voices.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="Diffsinger3rdApi">
+      <HintPath>$(ChoristaDiffsingerRoot)\Diffsinger3rdApi.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="ChoristaVocoder">
+      <HintPath>$(ChoristaDiffsingerRoot)\ChoristaVocoder.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="YamlDotNet">
+      <HintPath>$(ChoristaDiffsingerRoot)\YamlDotNet.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Microsoft.ML.OnnxRuntime115">
+      <HintPath>$(ChoristaDiffsingerRoot)\Microsoft.ML.OnnxRuntime115.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="description.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

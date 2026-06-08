@@ -1,4 +1,6 @@
 import json
+import os
+os.environ['DIFFSINGER_USE_MAMBA3'] = '0'
 from collections import OrderedDict
 from pathlib import Path
 from typing import List, Union, Tuple, Dict
@@ -128,6 +130,11 @@ class DiffSingerAcousticExporter(BaseExporter):
         
         return converted
 
+    @staticmethod
+    def _assert_onnx_compatible_ssm_runtime():
+        if os.environ.get('DIFFSINGER_USE_MAMBA3', '').lower() in {'1', 'true', 'yes'}:
+            raise RuntimeError('Exporter failed to switch to ONNX-compatible SimpleSSM surrogate runtime.')
+
     def __init__(
             self,
             device: Union[str, torch.device] = 'cpu',
@@ -138,6 +145,7 @@ class DiffSingerAcousticExporter(BaseExporter):
             export_spk: List[Tuple[str, Dict[str, float]]] = None,
             freeze_spk: Tuple[str, Dict[str, float]] = None
     ):
+        self._assert_onnx_compatible_ssm_runtime()
         super().__init__(device=device, cache_dir=cache_dir)
         # Basic attributes
         self.model_name: str = hparams['exp_name']
@@ -254,10 +262,65 @@ class DiffSingerAcousticExporter(BaseExporter):
         model_onnx = self._merge_fs2_aux_diffusion_graphs(fs2_aux_onnx, diffusion_onnx)
         model_onnx = self._try_simplify(model_onnx, 'merged')
         
-        onnx.save(model_onnx, path)
+        candidate_path = path.with_name(f'{path.stem}.candidate{path.suffix}')
+        onnx.save(model_onnx, candidate_path)
+        self._validate_acoustic_onnx(candidate_path)
+        candidate_path.replace(path)
         self.fs2_aux_cache_path.unlink()
         self.diffusion_cache_path.unlink()
+        print(f'| export model => {path}')
     
+    @staticmethod
+    def _validate_acoustic_onnx(onnx_path: Path):
+        import numpy as np
+        import onnxruntime as ort
+
+        sess = ort.InferenceSession(str(onnx_path), providers=['CPUExecutionProvider'])
+        input_names = {i.name for i in sess.get_inputs()}
+        required_inputs = {'tokens', 'durations', 'f0', 'steps'}
+        missing_inputs = sorted(required_inputs - input_names)
+        if missing_inputs:
+            raise RuntimeError(f'Invalid acoustic ONNX: missing input(s): {missing_inputs}')
+
+        n_tokens = 5
+        durations = np.array([[3, 5, 2, 1, 4]], dtype=np.int64)
+        n_frames = int(durations.sum())
+        feeds = {}
+        for input_info in sess.get_inputs():
+            name = input_info.name
+            shape = [d if isinstance(d, int) and d > 0 else None for d in input_info.shape]
+            if name == 'tokens':
+                feeds[name] = np.ones((1, n_tokens), dtype=np.int64)
+            elif name == 'durations':
+                feeds[name] = durations
+            elif name == 'languages':
+                feeds[name] = np.zeros((1, n_tokens), dtype=np.int64)
+            elif name == 'depth':
+                feeds[name] = np.array(0.5, dtype=np.float32)
+            elif name == 'steps':
+                feeds[name] = np.array(5, dtype=np.int64)
+            elif name == 'spk_embed':
+                hidden_size = shape[2] if len(shape) == 3 and shape[2] is not None else 256
+                feeds[name] = np.zeros((1, n_frames, hidden_size), dtype=np.float32)
+            else:
+                feeds[name] = np.zeros((1, n_frames), dtype=np.float32)
+
+        outputs = sess.run(None, feeds)
+        if not outputs:
+            raise RuntimeError('Invalid acoustic ONNX: no outputs')
+        mel = outputs[0]
+        output_shape = sess.get_outputs()[0].shape
+        expected_mel_bins = output_shape[2] if len(output_shape) == 3 and isinstance(output_shape[2], int) else None
+        if mel.ndim != 3 or mel.shape[1] != n_frames:
+            raise RuntimeError(f'Invalid acoustic ONNX: unexpected mel shape {mel.shape}')
+        if expected_mel_bins is not None and mel.shape[2] != expected_mel_bins:
+            raise RuntimeError(f'Invalid acoustic ONNX: unexpected mel bins {mel.shape[2]}, expected {expected_mel_bins}')
+        if not np.isfinite(mel).all():
+            raise RuntimeError('Invalid acoustic ONNX: mel output contains NaN or Inf')
+        if float(np.max(np.abs(mel))) > 1e4:
+            raise RuntimeError('Invalid acoustic ONNX: mel output magnitude is out of safe range')
+        print(f'| validate acoustic ONNX: OK {onnx_path}')
+
     @staticmethod
     def _try_simplify(model, name):
         """Try onnxsim.simplify; fall back to original on failure."""

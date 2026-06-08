@@ -1,0 +1,36 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <LangVersion>12.0</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <IsPackable>false</IsPackable>
+    <PlatformTarget>x64</PlatformTarget>
+    <RootNamespace>DiffsingerSSM.Tests</RootNamespace>
+    <ImportDirectoryBuildProps>false</ImportDirectoryBuildProps>
+    <TuneLabRuntimeRoot Condition="'$(TuneLabRuntimeRoot)' == ''">..\..\..\..\.build\tunelab_runtime_v1.6.0</TuneLabRuntimeRoot>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.10.0" />
+    <PackageReference Include="xunit" Version="2.9.0" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\ChoristaDiffsinger-SSM\ChoristaDiffsinger-SSM.csproj" />
+  </ItemGroup>
+
+  <!-- TuneLab runtime DLLs need to be present in the test output so xUnit can resolve them
+       when tests reference types from TuneLab.Extensions.Voices. -->
+  <ItemGroup>
+    <Reference Include="TuneLab.Base">
+      <HintPath>$(TuneLabRuntimeRoot)\TuneLab.Base.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <Reference Include="TuneLab.Extensions.Voices">
+      <HintPath>$(TuneLabRuntimeRoot)\TuneLab.Extensions.Voices.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+  </ItemGroup>
+</Project>
