@@ -16,3 +16,20 @@ infer_out/
 
 .vscode
 .ipynb_checkpoints/
+
+# repo-private build / research artefacts (do not push)
+/.build/
+/.tmp_zip_extract/
+/.uploads/
+/.trae/
+/artifacts_cloud/
+/experiments/
+
+# .NET build outputs (extensions/ChoristaDiffsinger-SSM)
+**/bin/
+**/obj/
+**/dist/staging/
+*.pdb
+*.cache
+# keep packaged tlx + description.json under dist/, drop the staging copy
+!extensions/ChoristaDiffsinger-SSM/dist/*.tlx

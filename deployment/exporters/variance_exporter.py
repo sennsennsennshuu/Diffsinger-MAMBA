@@ -1,4 +1,6 @@
 import json
+import os
+os.environ['DIFFSINGER_USE_MAMBA3'] = '0'
 from pathlib import Path
 from typing import Union, List, Tuple, Dict
 
@@ -16,6 +18,11 @@ from utils.phoneme_utils import load_phoneme_dictionary
 
 
 class DiffSingerVarianceExporter(BaseExporter):
+    @staticmethod
+    def _assert_onnx_compatible_ssm_runtime():
+        if os.environ.get('DIFFSINGER_USE_MAMBA3', '').lower() in {'1', 'true', 'yes'}:
+            raise RuntimeError('Exporter failed to switch to ONNX-compatible SimpleSSM surrogate runtime.')
+
     def __init__(
             self,
             device: Union[str, torch.device] = 'cpu',
@@ -26,6 +33,7 @@ class DiffSingerVarianceExporter(BaseExporter):
             export_spk: List[Tuple[str, Dict[str, float]]] = None,
             freeze_spk: Tuple[str, Dict[str, float]] = None
     ):
+        self._assert_onnx_compatible_ssm_runtime()
         super().__init__(device=device, cache_dir=cache_dir)
         # Basic attributes
         self.model_name: str = hparams['exp_name']
@@ -122,52 +130,48 @@ class DiffSingerVarianceExporter(BaseExporter):
             pitch_pre = onnx.load(self.pitch_preprocess_cache_path)
             pitch_predictor = onnx.load(self.pitch_predictor_cache_path)
             pitch_post = onnx.load(self.pitch_postprocess_cache_path)
-            # Use onnx.compose.add_prefix to add prefix to entire models (including all edges)
-            pitch_pre = onnx.compose.add_prefix(pitch_pre, prefix='pre_')
-            pitch_predictor = onnx.compose.add_prefix(pitch_predictor, prefix='diff_')
-            pitch_post = onnx.compose.add_prefix(pitch_post, prefix='post_')
-            # Update io_map with prefixed names
-            # Merge: pre + predictor
-            pitch_pre_diffusion = onnx.compose.merge_models(
-                pitch_pre, pitch_predictor, io_map=[('pre_pitch_cond', 'diff_pitch_cond')],
-                prefix1='', prefix2='', doc_string='',
-                producer_name=pitch_pre.producer_name, producer_version=pitch_pre.producer_version,
-                domain=pitch_pre.domain, model_version=pitch_pre.model_version
+            pitch_predictor_onnx = self._optimize_merge_pitch_predictor_graph(
+                pitch_pre, pitch_predictor, pitch_post
             )
-            pitch_pre_diffusion.graph.name = pitch_pre.graph.name
-            # Merge: (pre+predictor) + post
-            pitch_predictor_onnx = onnx.compose.merge_models(
-                pitch_pre_diffusion, pitch_post, io_map=[
-                    ('diff_x_pred', 'post_x_pred'), ('pre_base_pitch', 'post_base_pitch')
-                ], prefix1='', prefix2='', doc_string='',
-                producer_name=pitch_pre.producer_name, producer_version=pitch_pre.producer_version,
-                domain=pitch_pre.domain, model_version=pitch_pre.model_version
-            )
-            pitch_predictor_onnx.graph.name = pitch_pre.graph.name
             pitch_predictor_path = path / f'{model_name}.pitch.onnx'
-            onnx.save(pitch_predictor_onnx, pitch_predictor_path)
+            pitch_candidate_path = pitch_predictor_path.with_name(
+                f'{pitch_predictor_path.stem}.candidate{pitch_predictor_path.suffix}'
+            )
+            onnx.save(pitch_predictor_onnx, pitch_candidate_path)
+            self._ensure_steps_input(pitch_candidate_path)
+            self._validate_onnx_inputs(
+                pitch_candidate_path,
+                required={'steps'},
+                forbidden={'pitch_cond', 'diff_pitch_cond'},
+                model_name='pitch predictor'
+            )
+            pitch_candidate_path.replace(pitch_predictor_path)
             self.pitch_preprocess_cache_path.unlink()
             self.pitch_predictor_cache_path.unlink()
             self.pitch_postprocess_cache_path.unlink()
             print(f'| export pitch predictor => {pitch_predictor_path}')
         if self.model.predict_variances:
-            # Export variance sub-models separately (skip merge due to PyTorch 2.9.0 ONNX export bugs)
             var_pre = onnx.load(self.variance_preprocess_cache_path)
             var_diffusion = onnx.load(self.multi_var_predictor_cache_path)
             var_post = onnx.load(self.variance_postprocess_cache_path)
-            # Save separately without merge
-            var_pre_path = path / f'{model_name}.variance_pre.onnx'
-            onnx.save(var_pre, var_pre_path)
-            self.variance_preprocess_cache_path.unlink()
-            print(f'| export variance preprocessor => {var_pre_path}')
+            var_predictor = self._optimize_merge_variance_predictor_graph(var_pre, var_diffusion, var_post)
             var_predictor_path = path / f'{model_name}.variance.onnx'
-            onnx.save(var_diffusion, var_predictor_path)
+            var_candidate_path = var_predictor_path.with_name(
+                f'{var_predictor_path.stem}.candidate{var_predictor_path.suffix}'
+            )
+            onnx.save(var_predictor, var_candidate_path)
+            self._ensure_steps_input(var_candidate_path)
+            self._validate_onnx_inputs(
+                var_candidate_path,
+                required={'steps'},
+                forbidden={'variance_cond', 'diff_variance_cond'},
+                model_name='variance predictor'
+            )
+            var_candidate_path.replace(var_predictor_path)
+            self.variance_preprocess_cache_path.unlink()
             self.multi_var_predictor_cache_path.unlink()
-            print(f'| export variance predictor => {var_predictor_path}')
-            var_post_path = path / f'{model_name}.variance_post.onnx'
-            onnx.save(var_post, var_post_path)
             self.variance_postprocess_cache_path.unlink()
-            print(f'| export variance postprocessor => {var_post_path}')
+            print(f'| export variance predictor => {var_predictor_path}')
 
     def export_attachments(self, path: Path):
         for spk in self.export_spk:
@@ -202,8 +206,6 @@ class DiffSingerVarianceExporter(BaseExporter):
             dsconfig['use_note_rest'] = self.model.use_melody_encoder
         if self.model.predict_variances:
             dsconfig['variance'] = f'{model_name}.variance.onnx'
-            dsconfig['variance_pre'] = f'{model_name}.variance_pre.onnx'
-            dsconfig['variance_post'] = f'{model_name}.variance_post.onnx'
             for variance in VARIANCE_CHECKLIST:
                 dsconfig[f'predict_{variance}'] = (variance in self.model.variance_prediction_list)
         # sampling acceleration
@@ -439,18 +441,22 @@ class DiffSingerVarianceExporter(BaseExporter):
                 def __init__(self, predictor, steps):
                     super().__init__()
                     self.predictor = predictor
-                    self.steps = steps
-                def forward(self, condition):
-                    return self.predictor(condition, steps=self.steps)
+                    self.hardcoded_steps = steps
+                def forward(self, condition, steps):
+                    # steps is accepted to match OpenUtau input but ignored;
+                    # internal computation uses hardcoded_steps for ONNX trace stability.
+                    return self.predictor(condition, steps=self.hardcoded_steps)
 
             wrapper = PitchPredictorExportWrapper(pitch_predictor, dummy_steps)
             wrapper.eval()
+            dummy_steps_tensor = torch.tensor([dummy_steps], dtype=torch.int64)
             torch.onnx.export(
                 wrapper,
-                (condition.transpose(1, 2),),
+                (condition.transpose(1, 2), dummy_steps_tensor),
                 self.pitch_predictor_cache_path,
                 input_names=[
                     'pitch_cond',
+                    'steps',
                 ],
                 output_names=[
                     'x_pred'
@@ -579,18 +585,22 @@ class DiffSingerVarianceExporter(BaseExporter):
                 def __init__(self, predictor, steps):
                     super().__init__()
                     self.predictor = predictor
-                    self.steps = steps
-                def forward(self, condition):
-                    return self.predictor(condition, steps=self.steps)
+                    self.hardcoded_steps = steps
+                def forward(self, condition, steps):
+                    # steps is accepted to match OpenUtau input but ignored;
+                    # internal computation uses hardcoded_steps for ONNX trace stability.
+                    return self.predictor(condition, steps=self.hardcoded_steps)
 
             wrapper = VarPredictorExportWrapper(multi_var_predictor, dummy_steps)
             wrapper.eval()
+            dummy_steps_tensor = torch.tensor([dummy_steps], dtype=torch.int64)
             torch.onnx.export(
                 wrapper,
-                (condition.transpose(1, 2),),
+                (condition.transpose(1, 2), dummy_steps_tensor),
                 self.multi_var_predictor_cache_path,
                 input_names=[
                     'variance_cond',
+                    'steps',
                 ],
                 output_names=[
                     'xs_pred'
@@ -800,6 +810,66 @@ class DiffSingerVarianceExporter(BaseExporter):
         )
         var_predictor.graph.name = var_pre.graph.name
         return var_predictor
+
+    # noinspection PyMethodMayBeStatic
+    def _ensure_steps_input(self, onnx_path: Path):
+        """Normalize the diffusion step input for OpenUtau.
+
+        OpenUtau sends the input as 'steps'. During prefixing/simplifying,
+        the exported graph may either drop it or rename it to an alias such
+        as 'diff_steps'. This post-process keeps the public ABI stable.
+        """
+        m = onnx.load(str(onnx_path))
+        graph = m.graph
+
+        step_aliases = [
+            i.name for i in graph.input
+            if i.name != 'steps' and i.name.lower().endswith('steps')
+        ]
+        for alias in step_aliases:
+            for node in graph.node:
+                for idx, name in enumerate(node.input):
+                    if name == alias:
+                        node.input[idx] = 'steps'
+            for value_info in list(graph.value_info) + list(graph.output):
+                if value_info.name == alias:
+                    value_info.name = 'steps'
+
+        unique_inputs = []
+        seen_inputs = set()
+        has_steps = False
+        for input_info in graph.input:
+            if input_info.name in step_aliases:
+                input_info.name = 'steps'
+            if input_info.name == 'steps':
+                has_steps = True
+            if input_info.name in seen_inputs:
+                continue
+            seen_inputs.add(input_info.name)
+            unique_inputs.append(input_info)
+
+        del graph.input[:]
+        graph.input.extend(unique_inputs)
+
+        if not has_steps:
+            steps_input = onnx.helper.make_tensor_value_info(
+                'steps', onnx.TensorProto.INT64, [1],
+            )
+            graph.input.append(steps_input)
+
+        onnx.save(m, str(onnx_path))
+
+    # noinspection PyMethodMayBeStatic
+    def _validate_onnx_inputs(self, onnx_path: Path, required: set, forbidden: set, model_name: str):
+        m = onnx.load(str(onnx_path))
+        input_names = {i.name for i in m.graph.input}
+        missing = sorted(required - input_names)
+        unexpected = sorted(forbidden & input_names)
+        if missing:
+            raise RuntimeError(f'Invalid {model_name} ONNX: missing input(s): {missing}')
+        if unexpected:
+            raise RuntimeError(f'Invalid {model_name} ONNX: leaked internal input(s): {unexpected}')
+        print(f'| validate {model_name} ONNX inputs: OK {onnx_path}')
 
     # noinspection PyMethodMayBeStatic
     def _export_spk_embed(self, path: Path, spk_embed: torch.Tensor):

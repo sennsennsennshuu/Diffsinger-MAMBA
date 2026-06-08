@@ -125,7 +125,7 @@ class MelodyEncoder(nn.Module):
             dropout=get_hparam('dropout'), num_heads=get_hparam('num_heads'),
             use_pos_embed=get_hparam('use_pos_embed'), rel_pos=get_hparam('rel_pos'),
             use_rope=get_hparam('use_rope'),
-            layer_types=get_hparam('encoder_layer_types', None),
+            layer_types=get_hparam('encoder_layer_types'),
         )
         self.out_proj = Linear(hidden_size, hparams['hidden_size'])
 

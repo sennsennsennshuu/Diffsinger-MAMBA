@@ -65,7 +65,7 @@ max_beta: 0.02
 enc_ffn_kernel_size: 3
 use_rope: true
 rel_pos: true
-encoder_layer_types: []   # 空 = 全部 mamba；['mamba','mamba','attention','attention'] 混合 Encoder
+encoder_layer_types: ['mamba', 'mamba', 'attention', 'attention']   # 混合 Encoder：前2层 Mamba3 + 后2层 Transformer Self-Attention
 sampling_algorithm: euler
 sampling_steps: 20
 diff_accelerator: ddim
